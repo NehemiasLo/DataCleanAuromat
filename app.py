@@ -465,7 +465,7 @@ if df is not None:
                     st.dataframe(df.head(10), use_container_width=True)
                     st.caption(f"Filas originales: {df.shape[0]} | Columnas: {df.shape[1]}")
                 with col_despues:
-                    st.markdown("<p style='color: #10B981; font-weight: 600;'>✅ Dataset Optimizado (Limpio):</p>", unsafe_allowed_html=False)
+                    st.markdown("<p style='color: #10B981; font-weight: 600;'>✅ Dataset Optimizado (Limpio):</p>", unsafe_allow_html=True)
                     st.dataframe(df_final.head(10), use_container_width=True)
                     st.caption(f"Filas limpias: {df_final.shape[0]} | Columnas: {df_final.shape[1]}")
 
