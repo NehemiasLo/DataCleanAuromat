@@ -296,7 +296,16 @@ if df is not None:
             st.markdown("**Resumen de inconsistencias encontradas:**")
             total_filas, total_cols = df.shape
             filas_duplicadas = int(df.duplicated().sum())
-            total_nulos = int(df.isnull().sum().sum())
+            
+            # Cálculo de nulos reales normalizando temporalmente
+            temp_df = df.copy()
+            for col in temp_df.columns:
+                if temp_df[col].dtype == object:
+                    temp_df[col] = temp_df[col].astype(str).str.strip().replace({
+                        'None': np.nan, 'none': np.nan, 'nan': np.nan, 'NaN': np.nan,
+                        'Null': np.nan, 'null': np.nan, 'N/A': np.nan, 'n/a': np.nan, '': np.nan
+                    })
+            total_nulos = int(temp_df.isnull().sum().sum())
             
             st.metric(label="Total de Celdas de Datos", value=f"{total_filas} filas x {total_cols} col.")
             st.metric(label="Filas Repetidas (Duplicadas)", value=filas_duplicadas, delta=-filas_duplicadas if filas_duplicadas > 0 else 0, delta_color="inverse")
@@ -316,17 +325,30 @@ if df is not None:
             clean_text = st.checkbox("Estandarizar textos y nombres", value=True, help="Quita espacios innecesarios, capitaliza nombres y corrige variaciones ortográficas de ciudades comunes como 'Medellín'.")
             clean_currencies = st.checkbox("Corregir e igualar formatos de monedas", value=True, help="Detecta símbolos de divisas (€, $, ¥) y estandariza los montos a formato numérico limpio.")
         with col_opt2:
-            clean_nulls = st.checkbox("Rellenar celdas vacías de forma inteligente", value=True, help="Completa textos faltantes con el valor más frecuente y números vacíos utilizando el promedio estadístico (mediana).")
+            clean_nulls = st.checkbox("Rellenar celdas vacías de forma inteligente", value=True, help="Completa textos, números y fechas faltantes utilizando el promedio, moda o etiquetas 'No Especificado'.")
             clean_outliers = st.checkbox("Moderar valores extremos y corregir negativos", value=True, help="Identifica números fuera de lo común causados por errores tipográficos (ej. edad de 150) y los ajusta a valores lógicos.")
             infer_types = st.checkbox("Autodetectar y convertir fechas/números", value=True, help="Corrige formatos de columnas que deberían ser fechas o números pero se guardaron como texto.")
 
-        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allowed_html=True)
         
         if st.button("✨ Iniciar Limpieza Automática de Datos", type="primary"):
             with st.spinner("Saneando estructura, corrigiendo inconsistencias y puliendo tus datos..."):
                 
                 df_cleaned = df.copy()
                 logs = []
+
+                # --- FASE 0: Normalización Universal de Celdas Vacías (¡CRÍTICO para resolver strings 'None'!) ---
+                for col in df_cleaned.columns:
+                    # Si la columna contiene texto, limpiamos espacios fantasmas y convertimos pseudo-nulos a NaN reales
+                    if pd.api.types.is_object_dtype(df_cleaned[col]):
+                        df_cleaned[col] = df_cleaned[col].astype(str).str.strip()
+                        df_cleaned[col] = df_cleaned[col].replace({
+                            'None': np.nan, 'none': np.nan, 'NONE': np.nan,
+                            'nan': np.nan, 'NaN': np.nan, 'NAN': np.nan,
+                            'null': np.nan, 'Null': np.nan, 'NULL': np.nan,
+                            'N/A': np.nan, 'n/a': np.nan, 'NaT': np.nan, 'nat': np.nan,
+                            '': np.nan, 'None ': np.nan, 'nan ': np.nan
+                        })
 
                 # --- A. Eliminar duplicados ---
                 if clean_duplicates:
@@ -340,13 +362,13 @@ if df is not None:
                     for col in df_cleaned.columns:
                         if 'date' in col.lower() or 'fecha' in col.lower():
                             temp_series = pd.to_datetime(df_cleaned[col], errors='coerce')
-                            if temp_series.notna().sum() / len(df_cleaned) > 0.6 and temp_series.notna().sum() > 0:
+                            if temp_series.notna().sum() / len(df_cleaned) > 0.4 and temp_series.notna().sum() > 0:
                                 df_cleaned[col] = temp_series
-                                logs.append(f"La columna **'{col}'** se formateó correctamente como Fecha.")
+                                logs.append(f"La columna **'{col}'** se formateó correctamente como Fecha/Hora.")
                                 continue
 
                         temp_series = pd.to_numeric(df_cleaned[col], errors='coerce')
-                        if not pd.api.types.is_numeric_dtype(df_cleaned[col]) and (temp_series.notna().sum() / len(df_cleaned) > 0.8):
+                        if not pd.api.types.is_numeric_dtype(df_cleaned[col]) and (temp_series.notna().sum() / len(df_cleaned) > 0.6):
                             df_cleaned[col] = temp_series
                             logs.append(f"La columna de texto **'{col}'** se transformó a tipo Numérico.")
                             continue
@@ -376,7 +398,7 @@ if df is not None:
                         if df_cleaned[col].dropna().empty:
                             continue
                         
-                        # Saneamiento de Negativos en variables de conteo/ventas que deben ser positivas
+                        # Saneamiento de Negativos en variables cuantitativas que deben ser positivas
                         negative_mask = df_cleaned[col] < 0
                         negative_count = negative_mask.sum()
                         if negative_count > 0:
@@ -400,30 +422,52 @@ if df is not None:
                             df_cleaned.loc[outliers_mask, col] = median_val
                             logs.append(f"En **'{col}'** se normalizaron **{outliers_count} valores extremadamente desproporcionados** (ej. errores de digitación).")
 
-                # --- E. Imputación de Valores Faltantes ---
+                # --- E. Imputación de Valores Faltantes Completa (Texto, Números y FECHAS) ---
                 if clean_nulls:
                     for col in df_cleaned.columns:
-                        if pd.api.types.is_numeric_dtype(df_cleaned[col]):
+                        # 1. Columnas de Fecha/Hora (Para resolver el None en Fecha_Venta)
+                        if pd.api.types.is_datetime64_any_dtype(df_cleaned[col]):
+                            if df_cleaned[col].isnull().any():
+                                mode_series = df_cleaned[col].mode()
+                                if not mode_series.empty:
+                                    fill_val = mode_series[0]
+                                else:
+                                    fill_val = df_cleaned[col].dropna().iloc[0] if not df_cleaned[col].dropna().empty else pd.Timestamp.now()
+                                df_cleaned[col] = df_cleaned[col].fillna(fill_val)
+                                logs.append(f"Celdas vacías en la columna de fecha **'{col}'** completadas con la fecha más común ({fill_val.strftime('%Y-%m-%d') if hasattr(fill_val, 'strftime') else fill_val}).")
+
+                        # 2. Columnas Numéricas
+                        elif pd.api.types.is_numeric_dtype(df_cleaned[col]):
                             if df_cleaned[col].isnull().any():
                                 median_val = df_cleaned[col].median()
+                                if pd.isna(median_val):
+                                    median_val = 0
                                 df_cleaned[col] = df_cleaned[col].fillna(median_val)
                                 logs.append(f"Celdas vacías en la columna numérica **'{col}'** completadas con su mediana ({median_val}).")
-                        elif pd.api.types.is_object_dtype(df_cleaned[col]):
-                            df_cleaned[col] = df_cleaned[col].replace({'': np.nan, 'nan': np.nan, 'NaN': np.nan, 'None': np.nan, 'N/A': np.nan})
-                            df_cleaned[col] = df_cleaned[col].replace(r'^\s*$', np.nan, regex=True)
 
+                        # 3. Columnas de Texto / Categóricas (Para resolver el None en Categoria)
+                        elif pd.api.types.is_object_dtype(df_cleaned[col]):
+                            # Reemplazo de seguridad de textos 'None' que puedan haberse saltado filtros anteriores
+                            df_cleaned[col] = df_cleaned[col].replace({'None': np.nan, 'none': np.nan, 'nan': np.nan, 'NaN': np.nan})
                             if df_cleaned[col].isnull().any():
-                                mode_val = df_cleaned[col].mode()[0] if not df_cleaned[col].mode().empty else 'No Especificado'
+                                non_null_elements = df_cleaned[col].dropna()
+                                # Filtramos strings nulos que hayan quedado como basura
+                                valid_elements = non_null_elements[~non_null_elements.astype(str).str.lower().isin(['none', 'nan', 'null', 'n/a', ''])]
+                                if not valid_elements.empty:
+                                    mode_val = valid_elements.mode()[0] if not valid_elements.mode().empty else 'No Especificado'
+                                else:
+                                    mode_val = 'No Especificado'
+                                
                                 df_cleaned[col] = df_cleaned[col].fillna(mode_val)
+                                # Aplicación para reemplazar cualquier residuo del texto literal 'None' o 'nan' por la moda
+                                df_cleaned[col] = df_cleaned[col].apply(lambda x: mode_val if str(x).strip().lower() in ['none', 'nan', 'null', 'n/a', ''] else x)
                                 logs.append(f"Celdas vacías de texto en **'{col}'** completadas con el término más común: '{mode_val}'.")
 
                 # --- F. Organización de Texto y Ortografía ---
                 if clean_text:
                     for col in df_cleaned.select_dtypes(include=['object']).columns:
                         if df_cleaned[col].notna().any():
-                            df_cleaned[col] = df_cleaned[col].astype(str)
-                            # Limpiar espacios en los extremos y capitalizar de manera limpia
-                            df_cleaned[col] = df_cleaned[col].str.strip()
+                            df_cleaned[col] = df_cleaned[col].astype(str).str.strip()
                             
                             # Corrección específica de ciudades comunes como "Medellín"
                             if 'ciudad' in col.lower() or 'municipio' in col.lower() or 'departamento' in col.lower():
