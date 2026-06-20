@@ -329,7 +329,7 @@ if df is not None:
             clean_outliers = st.checkbox("Moderar valores extremos y corregir negativos", value=True, help="Identifica números fuera de lo común causados por errores tipográficos (ej. edad de 150) y los ajusta a valores lógicos.")
             infer_types = st.checkbox("Autodetectar y convertir fechas/números", value=True, help="Corrige formatos de columnas que deberían ser fechas o números pero se guardaron como texto.")
 
-        st.markdown("<br>", unsafe_allowed_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
         
         if st.button("✨ Iniciar Limpieza Automática de Datos", type="primary"):
             with st.spinner("Saneando estructura, corrigiendo inconsistencias y puliendo tus datos..."):
