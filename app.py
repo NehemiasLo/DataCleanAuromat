@@ -61,7 +61,8 @@ if uploaded_file:
                 df[col] = df[col].apply(lambda x: np.nan if str(x).strip().lower() in nulos_textuales else x)
         return df
 
-    df = limpiar_nulos_textuales(df)
+    df_original = limpiar_nulos_textuales(df.copy())
+    df = df_original.copy()
 
     # --- Sección 2: Acción ---
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -80,6 +81,7 @@ if uploaded_file:
         for col in df_cleaned.select_dtypes(include='object').columns:
             df_cleaned[col] = df_cleaned[col].apply(lambda x: str(x).strip().title() if pd.notnull(x) else x)
         
+        st.session_state['df_original'] = df_original
         st.session_state['df_cleaned'] = df_cleaned
         st.success("✅ ¡Datos purificados! Se ha desbloqueado la descarga.")
     st.markdown('</div>', unsafe_allow_html=True)
@@ -88,7 +90,14 @@ if uploaded_file:
     if 'df_cleaned' in st.session_state:
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
         st.subheader("3. Resultados y Descarga")
-        st.dataframe(st.session_state['df_cleaned'], use_container_width=True)
+        
+        tab1, tab2 = st.tabs(["❌ Dataset Original", "✅ Dataset Optimizado"])
+        
+        with tab1:
+            st.dataframe(st.session_state['df_original'], use_container_width=True)
+            
+        with tab2:
+            st.dataframe(st.session_state['df_cleaned'], use_container_width=True)
         
         csv = st.session_state['df_cleaned'].to_csv(index=False).encode('utf-8')
         st.download_button("📥 Descargar Archivo Optimizado", csv, "archivo_limpio.csv", "text/csv")
