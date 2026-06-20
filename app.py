@@ -300,11 +300,11 @@ if df is not None:
             # Cálculo de nulos reales normalizando temporalmente
             temp_df = df.copy()
             for col in temp_df.columns:
-                if temp_df[col].dtype == object:
-                    temp_df[col] = temp_df[col].astype(str).str.strip().replace({
-                        'None': np.nan, 'none': np.nan, 'nan': np.nan, 'NaN': np.nan,
-                        'Null': np.nan, 'null': np.nan, 'N/A': np.nan, 'n/a': np.nan, '': np.nan
-                    })
+                temp_df[col] = temp_df[col].apply(
+                    lambda x: np.nan if pd.isnull(x) or str(x).strip().lower() in [
+                        'none', 'nan', 'null', 'n/a', 'na', 'nat', 'nil', '', 'none '
+                    ] else x
+                )
             total_nulos = int(temp_df.isnull().sum().sum())
             
             st.metric(label="Total de Celdas de Datos", value=f"{total_filas} filas x {total_cols} col.")
@@ -337,18 +337,14 @@ if df is not None:
                 df_cleaned = df.copy()
                 logs = []
 
-                # --- FASE 0: Normalización Universal de Celdas Vacías (¡CRÍTICO para resolver strings 'None'!) ---
+                # --- FASE 0: Normalización Universal de Celdas Vacías (¡Mapeo seguro y libre de colisiones!) ---
                 for col in df_cleaned.columns:
-                    # Si la columna contiene texto, limpiamos espacios fantasmas y convertimos pseudo-nulos a NaN reales
-                    if pd.api.types.is_object_dtype(df_cleaned[col]):
-                        df_cleaned[col] = df_cleaned[col].astype(str).str.strip()
-                        df_cleaned[col] = df_cleaned[col].replace({
-                            'None': np.nan, 'none': np.nan, 'NONE': np.nan,
-                            'nan': np.nan, 'NaN': np.nan, 'NAN': np.nan,
-                            'null': np.nan, 'Null': np.nan, 'NULL': np.nan,
-                            'N/A': np.nan, 'n/a': np.nan, 'NaT': np.nan, 'nat': np.nan,
-                            '': np.nan, 'None ': np.nan, 'nan ': np.nan
-                        })
+                    # Convertimos representaciones textuales de nulos a NaN reales de forma segura, respetando otros tipos
+                    df_cleaned[col] = df_cleaned[col].apply(
+                        lambda x: np.nan if pd.isnull(x) or str(x).strip().lower() in [
+                            'none', 'nan', 'null', 'n/a', 'na', 'nat', 'nil', '', 'none '
+                        ] else x
+                    )
 
                 # --- A. Eliminar duplicados ---
                 if clean_duplicates:
@@ -376,18 +372,19 @@ if df is not None:
                 # --- C. Formatos de Moneda ---
                 if clean_currencies:
                     for col in df_cleaned.select_dtypes(include='object').columns:
-                        combined_string = ' '.join(df_cleaned[col].astype(str).dropna().tolist())
+                        combined_string = ' '.join(df_cleaned[col].dropna().astype(str).tolist())
                         currency_pattern = r'[€$£¥]'
                         if pd.Series(combined_string).str.contains(currency_pattern, regex=True).any():
+                            # Reemplazo seguro preservando NaNs de forma nativa
+                            cleaned_series = df_cleaned[col].apply(lambda x: str(x).replace('€','').replace('$','').replace('£','').replace('¥','') if pd.notnull(x) else np.nan)
                             
-                            cleaned_series = df_cleaned[col].astype(str).str.replace(currency_pattern, '', regex=True)
-                            num_commas = cleaned_series.str.count(',').sum()
-                            num_dots = cleaned_series.str.count('\.').sum()
+                            num_commas = cleaned_series.dropna().astype(str).str.count(',').sum()
+                            num_dots = cleaned_series.dropna().astype(str).str.count('\.').sum()
 
                             if num_commas > num_dots and num_commas > 0:
-                                cleaned_series = cleaned_series.str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+                                cleaned_series = cleaned_series.apply(lambda x: str(x).replace('.', '').replace(',', '.') if pd.notnull(x) else np.nan)
                             else:
-                                cleaned_series = cleaned_series.str.replace(',', '', regex=False)
+                                cleaned_series = cleaned_series.apply(lambda x: str(x).replace(',', '') if pd.notnull(x) else np.nan)
 
                             df_cleaned[col] = pd.to_numeric(cleaned_series, errors='coerce')
                             logs.append(f"Se corrigieron y unificaron los formatos monetarios en la columna **'{col}'**.")
@@ -425,7 +422,7 @@ if df is not None:
                 # --- E. Imputación de Valores Faltantes Completa (Texto, Números y FECHAS) ---
                 if clean_nulls:
                     for col in df_cleaned.columns:
-                        # 1. Columnas de Fecha/Hora (Para resolver el None en Fecha_Venta)
+                        # 1. Columnas de Fecha/Hora
                         if pd.api.types.is_datetime64_any_dtype(df_cleaned[col]):
                             if df_cleaned[col].isnull().any():
                                 mode_series = df_cleaned[col].mode()
@@ -445,10 +442,8 @@ if df is not None:
                                 df_cleaned[col] = df_cleaned[col].fillna(median_val)
                                 logs.append(f"Celdas vacías en la columna numérica **'{col}'** completadas con su mediana ({median_val}).")
 
-                        # 3. Columnas de Texto / Categóricas (Para resolver el None en Categoria)
+                        # 3. Columnas de Texto / Categóricas (Resuelve definitivamente 'None' en Categoria, Vendedor, municipio)
                         elif pd.api.types.is_object_dtype(df_cleaned[col]):
-                            # Reemplazo de seguridad de textos 'None' que puedan haberse saltado filtros anteriores
-                            df_cleaned[col] = df_cleaned[col].replace({'None': np.nan, 'none': np.nan, 'nan': np.nan, 'NaN': np.nan})
                             if df_cleaned[col].isnull().any():
                                 non_null_elements = df_cleaned[col].dropna()
                                 # Filtramos strings nulos que hayan quedado como basura
@@ -459,19 +454,18 @@ if df is not None:
                                     mode_val = 'No Especificado'
                                 
                                 df_cleaned[col] = df_cleaned[col].fillna(mode_val)
-                                # Aplicación para reemplazar cualquier residuo del texto literal 'None' o 'nan' por la moda
-                                df_cleaned[col] = df_cleaned[col].apply(lambda x: mode_val if str(x).strip().lower() in ['none', 'nan', 'null', 'n/a', ''] else x)
                                 logs.append(f"Celdas vacías de texto en **'{col}'** completadas con el término más común: '{mode_val}'.")
 
                 # --- F. Organización de Texto y Ortografía ---
                 if clean_text:
                     for col in df_cleaned.select_dtypes(include=['object']).columns:
+                        # Modificamos de forma segura preservando NaNs de forma nativa
+                        df_cleaned[col] = df_cleaned[col].apply(lambda x: str(x).strip() if pd.notnull(x) else np.nan)
+                        
                         if df_cleaned[col].notna().any():
-                            df_cleaned[col] = df_cleaned[col].astype(str).str.strip()
-                            
-                            # Corrección específica de ciudades comunes como "Medellín"
+                            # Corrección específica de ciudades comunes como "Medellín" o "Bogotá"
                             if 'ciudad' in col.lower() or 'municipio' in col.lower() or 'departamento' in col.lower():
-                                medellin_variations = ['Medellín', 'Medellin', 'medellín', 'MEDELLIN', 'MEdellin', 'medellín ']
+                                medellin_variations = ['Medellín', 'Medellin', 'medellín', 'MEDELLIN', 'MEdellin']
                                 for var in medellin_variations:
                                     df_cleaned[col] = df_cleaned[col].str.replace(var, 'Medellín', case=False, regex=False)
                                 
@@ -480,9 +474,9 @@ if df is not None:
                                 for var in bogota_variations:
                                     df_cleaned[col] = df_cleaned[col].str.replace(var, 'Bogotá', case=False, regex=False)
 
-                            df_cleaned[col] = df_cleaned[col].str.title()
-                    logs.append("Se eliminaron espacios fantasmas al inicio/final de los textos y se estandarizaron mayúsculas de nombres.")
-
+                            # Aplicamos formato Título de forma segura preservando nulos reales
+                            df_cleaned[col] = df_cleaned[col].apply(lambda x: str(x).title() if pd.notnull(x) else np.nan)
+                
                 # Guardar en el estado de la sesión
                 st.session_state['df_cleaned'] = df_cleaned
                 st.session_state['logs'] = logs
